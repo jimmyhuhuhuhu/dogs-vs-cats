@@ -215,11 +215,28 @@ class CatDogClassifierApp:
         
     def load_model_worker(self):
         try:
-            # 使用 ResNet18 模型並下載官方預訓練權重 (首次執行需要網路連線)
-            weights = ResNet18_Weights.DEFAULT
-            self.model = resnet18(weights=weights)
-            self.model.eval()
-            self.categories = weights.meta["categories"]
+            import torch.nn as nn
+            temp_dir = os.path.dirname(os.path.abspath(__file__))
+            custom_model_path = os.path.join(temp_dir, "model.pth")
+            
+            if os.path.exists(custom_model_path):
+                # 載入自訂訓練的 2 分類模型
+                self.model = resnet18()
+                num_features = self.model.fc.in_features
+                self.model.fc = nn.Linear(num_features, 2)
+                
+                # 讀取權重
+                state_dict = torch.load(custom_model_path, map_location=torch.device('cpu'))
+                self.model.load_state_dict(state_dict)
+                self.model.eval()
+                self.is_custom_model = True
+            else:
+                # 使用 ResNet18 模型並下載官方預訓練權重 (首次執行需要網路連線)
+                weights = ResNet18_Weights.DEFAULT
+                self.model = resnet18(weights=weights)
+                self.model.eval()
+                self.categories = weights.meta["categories"]
+                self.is_custom_model = False
             
             # 載入成功，透過 Tkinter 的 after 方法安全地在主執行緒更新 UI
             self.root.after(0, self.model_loaded_callback)
@@ -230,8 +247,12 @@ class CatDogClassifierApp:
     def model_loaded_callback(self):
         self.select_btn.config(state="normal")
         self.download_btn.config(state="normal")
+        if getattr(self, "is_custom_model", False):
+            msg = "✅ 自訂訓練模型已載入！請選取圖片進行辨識。"
+        else:
+            msg = "✅ 預設 ImageNet 模型已載入！請下載數據集進行訓練。"
         self.result_label.config(
-            text="✅ AI 模型已成功載入！請選擇圖片或下載 Kaggle 數據集。",
+            text=msg,
             fg="#10B981"
         )
         
@@ -285,45 +306,73 @@ class CatDogClassifierApp:
         try:
             import urllib.request
             import zipfile
+            import tarfile
             
-            # 使用 Google 託管的貓狗數據集子集 (68MB)，不需 Kaggle 帳號/憑證即可直接下載
-            url = "https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip"
             temp_dir = os.path.dirname(os.path.abspath(__file__))
             dest_dir = os.path.join(temp_dir, "kaggle_dataset")
             os.makedirs(dest_dir, exist_ok=True)
+            
+            # 第一源：Google 託管精簡版 (68MB)
+            url_google = "https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip"
             zip_path = os.path.join(dest_dir, "cats_and_dogs_filtered.zip")
             
-            # 下載檔案，包含進度回報
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                block_size = 1024 * 64
-                
-                with open(zip_path, 'wb') as f:
-                    while True:
-                        buffer = response.read(block_size)
-                        if not buffer:
-                            break
-                        downloaded += len(buffer)
-                        f.write(buffer)
-                        if total_size > 0:
-                            percent = int(downloaded * 100 / total_size)
-                            self.root.after(0, lambda p=percent: self.result_label.config(
-                                text=f"🌐 正在下載數據集... {p}%", fg="#F1F5F9"
-                            ))
-            
-            # 開始解壓縮
-            self.root.after(0, lambda: self.result_label.config(text="📦 正在解壓縮數據集，請稍候...", fg="#F1F5F9"))
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(dest_dir)
-            
-            # 刪除 zip 壓縮檔以節省空間
             try:
-                os.remove(zip_path)
-            except Exception:
-                pass
+                self.root.after(0, lambda: self.result_label.config(text="🌐 正在下載數據集精簡版 (約 68MB)...", fg="#F1F5F9"))
+                req = urllib.request.Request(url_google, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req) as response:
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    block_size = 1024 * 64
+                    with open(zip_path, 'wb') as f:
+                        while True:
+                            buffer = response.read(block_size)
+                            if not buffer:
+                                break
+                            downloaded += len(buffer)
+                            f.write(buffer)
+                            if total_size > 0:
+                                percent = int(downloaded * 100 / total_size)
+                                self.root.after(0, lambda p=percent: self.result_label.config(
+                                    text=f"🌐 正在下載數據集精簡版... {p}%", fg="#F1F5F9"
+                                ))
+                self.root.after(0, lambda: self.result_label.config(text="📦 正在解壓數據集...", fg="#F1F5F9"))
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(dest_dir)
+                try:
+                    os.remove(zip_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                # 第二源：fast.ai 完整版 (839MB)
+                self.root.after(0, lambda: self.result_label.config(text="🌐 精簡版失敗，嘗試下載備用完整版 (約 839MB)...", fg="#F1F5F9"))
+                url_backup = "http://files.fast.ai/data/examples/dogscats.tgz"
+                tgz_path = os.path.join(dest_dir, "dogscats.tgz")
                 
+                req = urllib.request.Request(url_backup, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req) as response:
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    block_size = 1024 * 64
+                    with open(tgz_path, 'wb') as f:
+                        while True:
+                            buffer = response.read(block_size)
+                            if not buffer:
+                                break
+                            downloaded += len(buffer)
+                            f.write(buffer)
+                            if total_size > 0:
+                                percent = int(downloaded * 100 / total_size)
+                                self.root.after(0, lambda p=percent: self.result_label.config(
+                                    text=f"🌐 下載備用數據集... {p}%", fg="#F1F5F9"
+                                ))
+                self.root.after(0, lambda: self.result_label.config(text="📦 正在解壓 .tgz 數據集...", fg="#F1F5F9"))
+                with tarfile.open(tgz_path, 'r:gz') as tar_ref:
+                    tar_ref.extractall(dest_dir)
+                try:
+                    os.remove(tgz_path)
+                except Exception:
+                    pass
+                    
             self.root.after(0, lambda: self.kaggle_download_success_callback(dest_dir))
             
         except Exception as e:
@@ -390,39 +439,54 @@ class CatDogClassifierApp:
             # 3. 計算機率分布 (Softmax)
             probabilities = torch.nn.functional.softmax(output[0], dim=0)
             
-            # 4. 定義 ImageNet 中的狗與貓類別編號
-            # 狗的類別主要集中在 151 到 268 ( domestic dogs )，以及部分狼/胡狼等野生物種 (269-275)
-            DOG_CLASSES = set(range(151, 276))
-            # 貓的類別集中在 281 到 285 ( domestic cats )，加上 286 (美洲獅)、287 (山貓) 等貓科
-            CAT_CLASSES = set(range(281, 288))
-            
-            # 累加所有的狗類別機率與貓類別機率，比單一亞種機率更準確
-            prob_dog = sum(probabilities[idx].item() for idx in DOG_CLASSES)
-            prob_cat = sum(probabilities[idx].item() for idx in CAT_CLASSES)
-            
-            # 取得全類別最高預測值 (用於判定其他非貓狗類別)
-            top_prob, top_idx = torch.max(probabilities, 0)
-            top_idx = top_idx.item()
-            top_prob = top_prob.item()
-            
-            # 5. 進行邏輯判定
-            # 若貓狗累加機率都偏低 (例如 < 15%)，則回傳最可能的 ImageNet 類別名稱
-            if prob_dog > prob_cat and prob_dog > 0.15:
-                pred_class = "狗 (Dog)"
-                confidence = prob_dog
-                details = f"判定為犬科或狗狗品種 (累計信心度: {prob_dog:.1%})"
-                color = "#3B82F6" # 藍色
-            elif prob_cat > prob_dog and prob_cat > 0.15:
-                pred_class = "貓 (Cat)"
-                confidence = prob_cat
-                details = f"判定為貓科或貓咪品種 (累計信心度: {prob_cat:.1%})"
-                color = "#10B981" # 綠色
+            # 4. 進行邏輯判定
+            if getattr(self, "is_custom_model", False):
+                # 自訂模型輸出 (2類別: 0=貓, 1=狗)
+                prob_cat = probabilities[0].item()
+                prob_dog = probabilities[1].item()
+                
+                if prob_dog > prob_cat:
+                    pred_class = "狗 (Dog)"
+                    confidence = prob_dog
+                    details = f"自訂模型判定為狗 (信心度: {prob_dog:.1%})"
+                    color = "#3B82F6"
+                else:
+                    pred_class = "貓 (Cat)"
+                    confidence = prob_cat
+                    details = f"自訂模型判定為貓 (信心度: {prob_cat:.1%})"
+                    color = "#10B981"
             else:
-                class_name = self.categories[top_idx] if self.categories else f"Class {top_idx}"
-                pred_class = "非貓狗物體"
-                confidence = top_prob
-                details = f"這可能不是貓狗。\n預測最接近：{class_name} (信心度: {top_prob:.1%})"
-                color = "#EAB308" # 黃色
+                # 預設 ImageNet 模型輸出 (1000類別)
+                # 狗的類別主要集中在 151 到 268 ( domestic dogs )，以及部分狼/胡狼等野生物種 (269-275)
+                DOG_CLASSES = set(range(151, 276))
+                # 貓的類別集中在 281 到 285 ( domestic cats )，加上 286 (美洲獅)、287 (山貓) 等貓科
+                CAT_CLASSES = set(range(281, 288))
+                
+                # 累加所有的狗類別機率與貓類別機率，比單一亞種機率更準確
+                prob_dog = sum(probabilities[idx].item() for idx in DOG_CLASSES)
+                prob_cat = sum(probabilities[idx].item() for idx in CAT_CLASSES)
+                
+                # 取得全類別最高預測值 (用於判定其他非貓狗類別)
+                top_prob, top_idx = torch.max(probabilities, 0)
+                top_idx = top_idx.item()
+                top_prob = top_prob.item()
+                
+                if prob_dog > prob_cat and prob_dog > 0.15:
+                    pred_class = "狗 (Dog)"
+                    confidence = prob_dog
+                    details = f"預設模型判定為犬科或狗狗品種 (累計信心度: {prob_dog:.1%})"
+                    color = "#3B82F6" # 藍色
+                elif prob_cat > prob_dog and prob_cat > 0.15:
+                    pred_class = "貓 (Cat)"
+                    confidence = prob_cat
+                    details = f"預設模型判定為貓科或貓咪品種 (累計信心度: {prob_cat:.1%})"
+                    color = "#10B981" # 綠色
+                else:
+                    class_name = self.categories[top_idx] if self.categories else f"Class {top_idx}"
+                    pred_class = "非貓狗物體"
+                    confidence = top_prob
+                    details = f"這可能不是貓狗。\n預測最接近：{class_name} (信心度: {top_prob:.1%})"
+                    color = "#EAB308" # 黃色
                 
             # 回傳主執行緒更新 UI
             self.root.after(0, lambda: self.prediction_success_callback(pred_class, confidence, details, color))
