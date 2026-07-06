@@ -108,15 +108,35 @@ class CatDogClassifierApp:
             activebackground="#2563EB",
             activeforeground="white",
             bd=0,
-            padx=18,
+            padx=15,
             pady=8,
             cursor="hand2",
             state="disabled" # 在模型載入前先禁用
         )
-        self.select_btn.pack(side="left", padx=15)
+        self.select_btn.pack(side="left", padx=8)
         self.select_btn.bind("<Enter>", lambda e: self.on_btn_hover(self.select_btn, "#2563EB", True))
         self.select_btn.bind("<Leave>", lambda e: self.on_btn_hover(self.select_btn, "#3B82F6", True))
         self.select_btn.config(command=self.select_image)
+        
+        # 下載 Kaggle 數據集按鈕 (紫色)
+        self.download_btn = tk.Button(
+            self.btn_frame,
+            text="下載 Kaggle 數據集",
+            font=("Microsoft JhengHei", 12, "bold"),
+            bg="#8B5CF6", # Purple-500
+            fg="white",
+            activebackground="#7C3AED",
+            activeforeground="white",
+            bd=0,
+            padx=15,
+            pady=8,
+            cursor="hand2",
+            state="disabled" # 在模型載入前先禁用
+        )
+        self.download_btn.pack(side="left", padx=8)
+        self.download_btn.bind("<Enter>", lambda e: self.on_btn_hover(self.download_btn, "#7C3AED", True))
+        self.download_btn.bind("<Leave>", lambda e: self.on_btn_hover(self.download_btn, "#8B5CF6", True))
+        self.download_btn.config(command=self.async_download_kaggle)
         
         # 開始辨識按鈕 (綠色)
         self.predict_btn = tk.Button(
@@ -128,12 +148,12 @@ class CatDogClassifierApp:
             activebackground="#059669",
             activeforeground="white",
             bd=0,
-            padx=18,
+            padx=15,
             pady=8,
             cursor="hand2",
             state="disabled" # 在載入圖片前先禁用
         )
-        self.predict_btn.pack(side="left", padx=15)
+        self.predict_btn.pack(side="left", padx=8)
         self.predict_btn.bind("<Enter>", lambda e: self.on_btn_hover(self.predict_btn, "#059669"))
         self.predict_btn.bind("<Leave>", lambda e: self.on_btn_hover(self.predict_btn, "#10B981"))
         self.predict_btn.config(command=self.async_predict)
@@ -209,8 +229,9 @@ class CatDogClassifierApp:
             
     def model_loaded_callback(self):
         self.select_btn.config(state="normal")
+        self.download_btn.config(state="normal")
         self.result_label.config(
-            text="✅ AI 模型已成功載入！請點選「選擇圖片」按鈕開始。",
+            text="✅ AI 模型已成功載入！請選擇圖片或下載 Kaggle 數據集。",
             fg="#10B981"
         )
         
@@ -248,6 +269,83 @@ class CatDogClassifierApp:
             self.score_text.pack_forget()
         except Exception as e:
             messagebox.showerror("讀取圖片失敗", f"無法開啟此圖片檔案。\n錯誤: {str(e)}")
+            
+    def async_download_kaggle(self):
+        """非同步下載 Kaggle 數據集，避免 GUI 凍結"""
+        self.select_btn.config(state="disabled")
+        self.download_btn.config(state="disabled")
+        self.predict_btn.config(state="disabled")
+        self.result_label.config(text="🌐 正在下載 Kaggle 數據集 (約 218MB)，請稍候...", fg="#F1F5F9")
+        
+        thread = threading.Thread(target=self.download_kaggle_worker)
+        thread.daemon = True
+        thread.start()
+        
+    def download_kaggle_worker(self):
+        try:
+            # 檢查是否有安裝 kaggle 庫
+            try:
+                import kaggle
+            except ImportError:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "缺少必要套件", 
+                    "偵測到尚未安裝 kaggle Python 套件！\n\n請在終端機中執行：\npip install kaggle\n\n安裝完成後請重啟程式。"
+                ))
+                self.root.after(0, self.reset_buttons_callback)
+                return
+                
+            # 驗證 Kaggle API 憑證
+            try:
+                kaggle.api.authenticate()
+            except Exception as auth_err:
+                msg = (
+                    "Kaggle API 憑證驗證失敗！\n\n"
+                    "請確認您已完成以下步驟：\n"
+                    "1. 登入 Kaggle 並至 Account 頁面點選 'Create New API Token' 下載 kaggle.json。\n"
+                    "2. 將 kaggle.json 檔案放置於您的使用者路徑，路徑通常為：\n"
+                    "   C:\\Users\\您的使用者名稱\\.kaggle\\kaggle.json\n\n"
+                    f"詳細錯誤訊息：\n{str(auth_err)}"
+                )
+                self.root.after(0, lambda: messagebox.showerror("Kaggle 憑證錯誤", msg))
+                self.root.after(0, self.reset_buttons_callback)
+                return
+                
+            # 下載 tongpython/cat-and-dog 公共貓狗數據集並自動解壓縮
+            temp_dir = os.path.dirname(os.path.abspath(__file__))
+            dest_dir = os.path.join(temp_dir, "kaggle_dataset")
+            os.makedirs(dest_dir, exist_ok=True)
+            
+            # 使用 kaggle api 下載並自動解壓縮
+            kaggle.api.dataset_download_files('tongpython/cat-and-dog', path=dest_dir, unzip=True)
+            
+            self.root.after(0, lambda: self.kaggle_download_success_callback(dest_dir))
+            
+        except Exception as e:
+            self.root.after(0, lambda: self.kaggle_download_failed_callback(e))
+            
+    def kaggle_download_success_callback(self, dest_dir):
+        self.select_btn.config(state="normal")
+        self.download_btn.config(state="normal")
+        self.result_label.config(text="✅ Kaggle 數據集下載完成！請點擊「選擇圖片」進行選取。", fg="#10B981")
+        
+        # 彈出成功提示
+        messagebox.showinfo(
+            "下載成功", 
+            f"Kaggle 貓狗數據集已下載並解壓縮完成！\n"
+            f"儲存路徑為：\n{dest_dir}\n\n"
+            f"您現在可以點選「選擇圖片」，進入此資料夾選取圖片進行辨識。"
+        )
+        
+    def kaggle_download_failed_callback(self, error):
+        self.select_btn.config(state="normal")
+        self.download_btn.config(state="normal")
+        self.result_label.config(text="❌ Kaggle 數據集下載失敗！", fg="#EF4444")
+        messagebox.showerror("下載失敗", f"無法下載 Kaggle 數據集。\n請確認您的網路連線與憑證是否正確。\n\n錯誤詳情：\n{str(error)}")
+        
+    def reset_buttons_callback(self):
+        self.select_btn.config(state="normal")
+        self.download_btn.config(state="normal")
+        self.result_label.config(text="請選擇圖片或點選「下載 Kaggle 數據集」開始。", fg="#F1F5F9")
             
     def async_predict(self):
         """開啟新執行緒執行 AI 模型推論，防止 UI 凍結"""
