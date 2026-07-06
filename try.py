@@ -271,11 +271,11 @@ class CatDogClassifierApp:
             messagebox.showerror("讀取圖片失敗", f"無法開啟此圖片檔案。\n錯誤: {str(e)}")
             
     def async_download_kaggle(self):
-        """非同步下載 Kaggle 數據集，避免 GUI 凍結"""
+        """非同步下載貓狗數據集，避免 GUI 凍結"""
         self.select_btn.config(state="disabled")
         self.download_btn.config(state="disabled")
         self.predict_btn.config(state="disabled")
-        self.result_label.config(text="🌐 正在下載 Kaggle 數據集 (約 218MB)，請稍候...", fg="#F1F5F9")
+        self.result_label.config(text="🌐 正在下載數據集 (約 68MB)，請稍候...", fg="#F1F5F9")
         
         thread = threading.Thread(target=self.download_kaggle_worker)
         thread.daemon = True
@@ -283,41 +283,47 @@ class CatDogClassifierApp:
         
     def download_kaggle_worker(self):
         try:
-            # 檢查是否有安裝 kaggle 庫
-            try:
-                import kaggle
-            except ImportError:
-                self.root.after(0, lambda: messagebox.showerror(
-                    "缺少必要套件", 
-                    "偵測到尚未安裝 kaggle Python 套件！\n\n請在終端機中執行：\npip install kaggle\n\n安裝完成後請重啟程式。"
-                ))
-                self.root.after(0, self.reset_buttons_callback)
-                return
-                
-            # 驗證 Kaggle API 憑證
-            try:
-                kaggle.api.authenticate()
-            except Exception as auth_err:
-                msg = (
-                    "Kaggle API 憑證驗證失敗！\n\n"
-                    "請確認您已完成以下步驟：\n"
-                    "1. 登入 Kaggle 並至 Account 頁面點選 'Create New API Token' 下載 kaggle.json。\n"
-                    "2. 將 kaggle.json 檔案放置於您的使用者路徑，路徑通常為：\n"
-                    "   C:\\Users\\您的使用者名稱\\.kaggle\\kaggle.json\n\n"
-                    f"詳細錯誤訊息：\n{str(auth_err)}"
-                )
-                self.root.after(0, lambda: messagebox.showerror("Kaggle 憑證錯誤", msg))
-                self.root.after(0, self.reset_buttons_callback)
-                return
-                
-            # 下載 tongpython/cat-and-dog 公共貓狗數據集並自動解壓縮
+            import urllib.request
+            import zipfile
+            
+            # 使用 Google 託管的貓狗數據集子集 (68MB)，不需 Kaggle 帳號/憑證即可直接下載
+            url = "https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip"
             temp_dir = os.path.dirname(os.path.abspath(__file__))
             dest_dir = os.path.join(temp_dir, "kaggle_dataset")
             os.makedirs(dest_dir, exist_ok=True)
+            zip_path = os.path.join(dest_dir, "cats_and_dogs_filtered.zip")
             
-            # 使用 kaggle api 下載並自動解壓縮
-            kaggle.api.dataset_download_files('tongpython/cat-and-dog', path=dest_dir, unzip=True)
+            # 下載檔案，包含進度回報
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                block_size = 1024 * 64
+                
+                with open(zip_path, 'wb') as f:
+                    while True:
+                        buffer = response.read(block_size)
+                        if not buffer:
+                            break
+                        downloaded += len(buffer)
+                        f.write(buffer)
+                        if total_size > 0:
+                            percent = int(downloaded * 100 / total_size)
+                            self.root.after(0, lambda p=percent: self.result_label.config(
+                                text=f"🌐 正在下載數據集... {p}%", fg="#F1F5F9"
+                            ))
             
+            # 開始解壓縮
+            self.root.after(0, lambda: self.result_label.config(text="📦 正在解壓縮數據集，請稍候...", fg="#F1F5F9"))
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(dest_dir)
+            
+            # 刪除 zip 壓縮檔以節省空間
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+                
             self.root.after(0, lambda: self.kaggle_download_success_callback(dest_dir))
             
         except Exception as e:
@@ -326,12 +332,12 @@ class CatDogClassifierApp:
     def kaggle_download_success_callback(self, dest_dir):
         self.select_btn.config(state="normal")
         self.download_btn.config(state="normal")
-        self.result_label.config(text="✅ Kaggle 數據集下載完成！請點擊「選擇圖片」進行選取。", fg="#10B981")
+        self.result_label.config(text="✅ 數據集下載完成！請點擊「選擇圖片」進行選取。", fg="#10B981")
         
         # 彈出成功提示
         messagebox.showinfo(
             "下載成功", 
-            f"Kaggle 貓狗數據集已下載並解壓縮完成！\n"
+            f"貓狗數據集已下載並解壓縮完成！\n"
             f"儲存路徑為：\n{dest_dir}\n\n"
             f"您現在可以點選「選擇圖片」，進入此資料夾選取圖片進行辨識。"
         )
@@ -339,8 +345,8 @@ class CatDogClassifierApp:
     def kaggle_download_failed_callback(self, error):
         self.select_btn.config(state="normal")
         self.download_btn.config(state="normal")
-        self.result_label.config(text="❌ Kaggle 數據集下載失敗！", fg="#EF4444")
-        messagebox.showerror("下載失敗", f"無法下載 Kaggle 數據集。\n請確認您的網路連線與憑證是否正確。\n\n錯誤詳情：\n{str(error)}")
+        self.result_label.config(text="❌ 數據集下載失敗！", fg="#EF4444")
+        messagebox.showerror("下載失敗", f"無法下載數據集。\n請確認您的網路連線。\n\n錯誤詳情：\n{str(error)}")
         
     def reset_buttons_callback(self):
         self.select_btn.config(state="normal")
