@@ -8,6 +8,8 @@ try:
     from PIL import Image, ImageTk
     import torchvision.transforms as transforms
     from torchvision.models import resnet18, ResNet18_Weights
+    import ultralytics
+    from ultralytics import YOLO
 except ImportError as e:
     import tkinter as tk
     from tkinter import messagebox
@@ -24,9 +26,11 @@ except ImportError as e:
         missing_packages.append("torch")
     if "torchvision" in error_msg:
         missing_packages.append("torchvision")
+    if "ultralytics" in error_msg:
+        missing_packages.append("ultralytics")
     
     if not missing_packages:
-        missing_packages = ["torch", "torchvision", "pillow"]
+        missing_packages = ["torch", "torchvision", "pillow", "ultralytics"]
         
     cmd = f"pip install {' '.join(missing_packages)}"
     msg = (
@@ -41,17 +45,19 @@ except ImportError as e:
     sys.exit(1)
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 class CatDogClassifierApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("AI 貓狗影像辨識系統")
-        self.root.geometry("500x650")
+        self.root.title("AI 貓狗影像辨識與定位系統")
+        self.root.geometry("500x680") # 稍微增加高度以容納模型選選單
         self.root.configure(bg="#0F172A") # Slate-900 質感深藍灰色底色
         self.root.resizable(False, False)
         
         self.model = None
+        self.yolo_model = None
+        self.current_model_type = tk.StringVar(value="ResNet-18") # 預設使用 ResNet-18
         self.categories = None
         self.image_path = None
         self.tk_image = None
@@ -71,7 +77,43 @@ class CatDogClassifierApp:
             bg="#0F172A",
             fg="#F8FAFC"
         )
-        title_label.pack(pady=20)
+        title_label.pack(pady=(15, 5))
+        
+        # 模型選擇區域
+        model_select_frame = tk.Frame(self.root, bg="#0F172A")
+        model_select_frame.pack(pady=(5, 10))
+        
+        model_select_label = tk.Label(
+            model_select_frame,
+            text="選擇辨識模型：",
+            font=("Microsoft JhengHei", 10),
+            bg="#0F172A",
+            fg="#94A3B8"
+        )
+        model_select_label.pack(side="left", padx=5)
+        
+        # 設定 ttk 下拉選單樣式
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure(
+            "TCombobox",
+            fieldbackground="#1E293B",
+            background="#334155",
+            foreground="#F1F5F9",
+            darkcolor="#334155",
+            lightcolor="#334155"
+        )
+        
+        self.model_combo = ttk.Combobox(
+            model_select_frame,
+            textvariable=self.current_model_type,
+            values=["ResNet-18", "YOLOv8 (物件偵測)"],
+            state="readonly",
+            width=20,
+            font=("Microsoft JhengHei", 10)
+        )
+        self.model_combo.pack(side="left", padx=5)
+        self.model_combo.bind("<<ComboboxSelected>>", self.on_model_changed)
         
         # 2. 圖片預覽區域 (外框與預設提示)
         self.preview_frame = tk.Frame(
@@ -240,9 +282,43 @@ class CatDogClassifierApp:
             
             # 載入成功，透過 Tkinter 的 after 方法安全地在主執行緒更新 UI
             self.root.after(0, self.model_loaded_callback)
+            
+            # 背景啟動 YOLOv8 模型載入，不阻擋 ResNet-18 使用
+            threading.Thread(target=self.load_yolo_model, daemon=True).start()
         except Exception as e:
             # 載入失敗，更新 UI 並彈出視窗
             self.root.after(0, lambda: self.model_load_failed_callback(e))
+            
+    def load_yolo_model(self):
+        try:
+            # 載入 YOLOv8 (yolov8n.pt，若不在本地會自動下載 ~6.2MB)
+            self.yolo_model = YOLO("yolov8n.pt")
+            self.root.after(0, self.yolo_loaded_callback)
+        except Exception as e:
+            self.root.after(0, lambda: self.result_label.config(
+                text=f"⚠️ YOLOv8 載入失敗 (可稍後重試): {e}", fg="#EAB308"
+            ))
+            
+    def yolo_loaded_callback(self):
+        if self.current_model_type.get() == "YOLOv8 (物件偵測)":
+            self.result_label.config(text="✅ YOLOv8 模型載入成功！請選取圖片進行辨識。", fg="#10B981")
+            
+    def on_model_changed(self, event=None):
+        model_type = self.current_model_type.get()
+        if model_type == "YOLOv8 (物件偵測)":
+            if self.yolo_model is None:
+                self.result_label.config(text="🔄 正在載入 YOLOv8 模型...", fg="#F8FAFC")
+                threading.Thread(target=self.load_yolo_model, daemon=True).start()
+            else:
+                self.result_label.config(text="✅ YOLOv8 模式已就緒，請點選「開始辨識」。", fg="#10B981")
+        else:
+            if self.model is None:
+                self.result_label.config(text="🔄 正在載入 ResNet-18 模型...", fg="#F8FAFC")
+            else:
+                if getattr(self, "is_custom_model", False):
+                    self.result_label.config(text="✅ 自訂 ResNet-18 模型已載入！請開始辨識。", fg="#10B981")
+                else:
+                    self.result_label.config(text="✅ 預設 ResNet-18 模型已載入！可開始辨識。", fg="#10B981")
             
     def model_loaded_callback(self):
         self.select_btn.config(state="normal")
@@ -251,10 +327,11 @@ class CatDogClassifierApp:
             msg = "✅ 自訂訓練模型已載入！請選取圖片進行辨識。"
         else:
             msg = "✅ 預設 ImageNet 模型已載入！請下載數據集進行訓練。"
-        self.result_label.config(
-            text=msg,
-            fg="#10B981"
-        )
+        if self.current_model_type.get() == "ResNet-18":
+            self.result_label.config(
+                text=msg,
+                fg="#10B981"
+            )
         
     def model_load_failed_callback(self, error):
         self.result_label.config(
@@ -416,85 +493,148 @@ class CatDogClassifierApp:
         thread.daemon = True
         thread.start()
         
+    def translate_class(self, english_name):
+        translation = {
+            "cat": "貓 (Cat)",
+            "dog": "狗 (Dog)",
+            "person": "人 (Person)",
+            "bicycle": "自行車 (Bicycle)",
+            "car": "汽車 (Car)",
+            "motorcycle": "機車 (Motorcycle)",
+            "airplane": "飛機 (Airplane)",
+            "bus": "巴士 (Bus)",
+            "train": "火車 (Train)",
+            "truck": "卡車 (Truck)",
+            "boat": "船 (Boat)",
+            "bird": "鳥 (Bird)",
+            "horse": "馬 (Horse)",
+            "sheep": "綿羊 (Sheep)",
+            "cow": "牛 (Cow)",
+            "elephant": "大象 (Elephant)",
+            "bear": "熊 (Bear)",
+            "zebra": "斑馬 (Zebra)",
+            "giraffe": "長頸鹿 (Giraffe)"
+        }
+        return translation.get(english_name.lower(), english_name)
+
     def predict_worker(self):
         try:
-            # 1. 影像預處理：符合 ResNet-18 標準輸入格式 (224x224, 影像標準化)
-            img = Image.open(self.image_path).convert('RGB')
-            preprocess = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
-            ])
-            input_tensor = preprocess(img)
-            input_batch = input_tensor.unsqueeze(0) # 加上 batch 維度 (1, 3, 224, 224)
+            model_type = self.current_model_type.get()
             
-            # 2. 模型推論
-            with torch.no_grad():
-                output = self.model(input_batch)
+            if model_type == "YOLOv8 (物件偵測)":
+                if self.yolo_model is None:
+                    # 若 YOLO 模型尚未載入，在此同步載入
+                    self.yolo_model = YOLO("yolov8n.pt")
                 
-            # 3. 計算機率分布 (Softmax)
-            probabilities = torch.nn.functional.softmax(output[0], dim=0)
-            
-            # 4. 進行邏輯判定
-            if getattr(self, "is_custom_model", False):
-                # 自訂模型輸出 (2類別: 0=貓, 1=狗)
-                prob_cat = probabilities[0].item()
-                prob_dog = probabilities[1].item()
+                # YOLOv8 物件偵測推論
+                results = self.yolo_model(self.image_path)
                 
-                if prob_dog > prob_cat:
-                    pred_class = "狗 (Dog)"
-                    confidence = prob_dog
-                    details = f"自訂模型判定為狗 (信心度: {prob_dog:.1%})"
+                # 取得標註好邊界框的圖像 (Numpy array, BGR 格式)
+                annotated_img_np = results[0].plot()
+                # 轉換為 PIL RGB 影像
+                annotated_img_rgb = Image.fromarray(annotated_img_np[:, :, ::-1])
+                
+                # 統計偵測到的物件
+                boxes = results[0].boxes
+                detected_counts = {}
+                for box in boxes:
+                    class_idx = int(box.cls[0])
+                    class_name = self.yolo_model.names[class_idx]
+                    detected_counts[class_name] = detected_counts.get(class_name, 0) + 1
+                
+                if detected_counts:
+                    # 組合辨識結果字串
+                    parts = []
+                    for name, count in detected_counts.items():
+                        parts.append(f"{count} 隻 {self.translate_class(name)}")
+                    pred_class = ", ".join(parts)
+                    confidence = float(boxes[0].conf[0]) if len(boxes) > 0 else 1.0
+                    details = f"YOLOv8 共偵測到 {len(boxes)} 個物體，邊界框已繪製於影像中。"
                     color = "#3B82F6"
                 else:
-                    pred_class = "貓 (Cat)"
-                    confidence = prob_cat
-                    details = f"自訂模型判定為貓 (信心度: {prob_cat:.1%})"
-                    color = "#10B981"
+                    pred_class = "無偵測到物體"
+                    confidence = 0.0
+                    details = "YOLOv8 在此影像中未偵測到任何已知物體。"
+                    color = "#EAB308"
+                
+                # 回傳主執行緒更新 UI，並更新標記後的圖片
+                self.root.after(0, lambda: self.prediction_success_callback(pred_class, confidence, details, color, annotated_img_rgb))
             else:
-                # 預設 ImageNet 模型輸出 (1000類別)
-                # 狗的類別主要集中在 151 到 268 ( domestic dogs )，以及部分狼/胡狼等野生物種 (269-275)
-                DOG_CLASSES = set(range(151, 276))
-                # 貓的類別集中在 281 到 285 ( domestic cats )，加上 286 (美洲獅)、287 (山貓) 等貓科
-                CAT_CLASSES = set(range(281, 288))
+                # 1. 影像預處理：符合 ResNet-18 標準輸入格式 (224x224, 影像標準化)
+                img = Image.open(self.image_path).convert('RGB')
+                preprocess = transforms.Compose([
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    )
+                ])
+                input_tensor = preprocess(img)
+                input_batch = input_tensor.unsqueeze(0) # 加上 batch 維度 (1, 3, 224, 224)
                 
-                # 累加所有的狗類別機率與貓類別機率，比單一亞種機率更準確
-                prob_dog = sum(probabilities[idx].item() for idx in DOG_CLASSES)
-                prob_cat = sum(probabilities[idx].item() for idx in CAT_CLASSES)
+                # 2. 模型推論
+                with torch.no_grad():
+                    output = self.model(input_batch)
+                    
+                # 3. 計算機率分布 (Softmax)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
                 
-                # 取得全類別最高預測值 (用於判定其他非貓狗類別)
-                top_prob, top_idx = torch.max(probabilities, 0)
-                top_idx = top_idx.item()
-                top_prob = top_prob.item()
-                
-                if prob_dog > prob_cat and prob_dog > 0.15:
-                    pred_class = "狗 (Dog)"
-                    confidence = prob_dog
-                    details = f"預設模型判定為犬科或狗狗品種 (累計信心度: {prob_dog:.1%})"
-                    color = "#3B82F6" # 藍色
-                elif prob_cat > prob_dog and prob_cat > 0.15:
-                    pred_class = "貓 (Cat)"
-                    confidence = prob_cat
-                    details = f"預設模型判定為貓科或貓咪品種 (累計信心度: {prob_cat:.1%})"
-                    color = "#10B981" # 綠色
+                # 4. 進行邏輯判定
+                if getattr(self, "is_custom_model", False):
+                    # 自訂模型輸出 (2類別: 0=貓, 1=狗)
+                    prob_cat = probabilities[0].item()
+                    prob_dog = probabilities[1].item()
+                    
+                    if prob_dog > prob_cat:
+                        pred_class = "狗 (Dog)"
+                        confidence = prob_dog
+                        details = f"自訂模型判定為狗 (信心度: {prob_dog:.1%})"
+                        color = "#3B82F6"
+                    else:
+                        pred_class = "貓 (Cat)"
+                        confidence = prob_cat
+                        details = f"自訂模型判定為貓 (信心度: {prob_cat:.1%})"
+                        color = "#10B981"
                 else:
-                    class_name = self.categories[top_idx] if self.categories else f"Class {top_idx}"
-                    pred_class = "非貓狗物體"
-                    confidence = top_prob
-                    details = f"這可能不是貓狗。\n預測最接近：{class_name} (信心度: {top_prob:.1%})"
-                    color = "#EAB308" # 黃色
-                
-            # 回傳主執行緒更新 UI
-            self.root.after(0, lambda: self.prediction_success_callback(pred_class, confidence, details, color))
+                    # 預設 ImageNet 模型輸出 (1000類別)
+                    DOG_CLASSES = set(range(151, 276))
+                    CAT_CLASSES = set(range(281, 288))
+                    
+                    # 累加所有的狗類別機率與貓類別機率
+                    prob_dog = sum(probabilities[idx].item() for idx in DOG_CLASSES)
+                    prob_cat = sum(probabilities[idx].item() for idx in CAT_CLASSES)
+                    
+                    # 取得全類別最高預測值
+                    top_prob, top_idx = torch.max(probabilities, 0)
+                    top_idx = top_idx.item()
+                    top_prob = top_prob.item()
+                    
+                    if prob_dog > prob_cat and prob_dog > 0.15:
+                        pred_class = "狗 (Dog)"
+                        confidence = prob_dog
+                        details = f"預設模型判定為犬科或狗狗品種 (累計信心度: {prob_dog:.1%})"
+                        color = "#3B82F6" # 藍色
+                    elif prob_cat > prob_dog and prob_cat > 0.15:
+                        pred_class = "貓 (Cat)"
+                        confidence = prob_cat
+                        details = f"預設模型判定為貓科或貓咪品種 (累計信心度: {prob_cat:.1%})"
+                        color = "#10B981" # 綠色
+                    else:
+                        class_name = self.categories[top_idx] if self.categories else f"Class {top_idx}"
+                        pred_class = "非貓狗物體"
+                        confidence = top_prob
+                        details = f"這可能不是貓狗。\n預測最接近：{class_name} (信心度: {top_prob:.1%})"
+                        color = "#EAB308" # 黃色
+                    
+                # 回傳主執行緒更新 UI，並重置為原始圖片
+                self.root.after(0, lambda: self.prediction_success_callback(pred_class, confidence, details, color, img))
             
         except Exception as e:
             self.root.after(0, lambda: self.prediction_failed_callback(e))
             
-    def prediction_success_callback(self, pred_class, confidence, details, color):
+    def prediction_success_callback(self, pred_class, confidence, details, color, annotated_img=None):
         # 恢復按鈕狀態
         self.predict_btn.config(state="normal")
         self.select_btn.config(state="normal")
@@ -504,6 +644,12 @@ class CatDogClassifierApp:
             text=f"🎯 辨識結果：{pred_class}",
             fg=color
         )
+        
+        # 更新圖片預覽 (若是 YOLOv8，會換成標有邊界框的圖；若是 ResNet-18，會換回乾淨的原始圖)
+        if annotated_img is not None:
+            annotated_img.thumbnail((320, 320))
+            self.tk_image = ImageTk.PhotoImage(annotated_img)
+            self.preview_label.config(image=self.tk_image, text="")
         
         # 顯示並更新進度條
         self.score_canvas.pack(pady=(10, 0))
